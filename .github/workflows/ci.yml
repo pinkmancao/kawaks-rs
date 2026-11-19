@@ -30,6 +30,8 @@ jobs:
       - name: Build native SDL2 launcher
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
+          # The bundled SDL2 CMake project predates CMake 4.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           set -euo pipefail
           test "$(uname -m)" = "$EXPECTED_ARCH"
