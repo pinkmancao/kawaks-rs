@@ -226,3 +226,57 @@ fn cps2_and_neo_geo_cold_boot_accept_credit_and_start() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the local merged WOF ROM archive"]
+fn wof_regions_start_each_native_stage_after_character_select() {
+    let root = std::env::var_os("KAWAKS_FIXTURE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
+    for game in ["wof", "wofa"] {
+        let archive = root.join("roms/cps1/wof.zip");
+        let roms = DinoRoms::load_game(game, archive).unwrap();
+        let count = Dino::starting_stages(game).len();
+        assert!(Dino::new_at_stage(roms.clone(), count as u8).is_err());
+        let mut scenes = HashSet::new();
+        for stage in 0..count as u8 {
+            let mut machine = Dino::new_at_stage(roms.clone(), stage).unwrap();
+            for frame in 0..1150 {
+                let buttons = if frame >= 400 {
+                    match frame % 120 {
+                        0..=6 => 0x2000,
+                        20..=26 => 0x1000,
+                        48..=54 | 80..=86 => 0x10,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                machine
+                    .step_frame(FrameInput {
+                        players: [buttons, 0, 0, 0],
+                    })
+                    .unwrap();
+                if frame == 1060 {
+                    assert_eq!(
+                        machine.read_main_byte(0xff7f88),
+                        0,
+                        "{game} changed before the match"
+                    );
+                }
+                if frame == 1090 {
+                    assert_eq!(
+                        machine.read_main_byte(0xff7f88),
+                        stage,
+                        "{game} initial stage"
+                    );
+                }
+            }
+            assert!(machine.report().qsound_commands > 0);
+            let pixels = machine.render_rgb();
+            assert!(pixels.chunks_exact(3).collect::<HashSet<_>>().len() > 20);
+            scenes.insert(crc32fast::hash(&pixels));
+        }
+        assert_eq!(scenes.len(), count, "{game} distinct stage scenes");
+    }
+}

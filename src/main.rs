@@ -135,7 +135,7 @@ fn run(args: impl Iterator<Item = OsString>) -> io::Result<()> {
         ));
     }
     let rom = rom.ok_or_else(|| bad_argument(USAGE))?;
-    let (mut machine, rom_crc) = load_machine(&game, rom, bios, load_state)?;
+    let (mut machine, rom_crc) = load_machine(&game, rom, bios, load_state, None)?;
     let [main, graphics, z80, samples] = rom_crc;
     println!(
         "ROM crc32 main={main:08x} graphics={graphics:08x} z80={z80:08x} samples={samples:08x}"
@@ -162,6 +162,7 @@ fn run(args: impl Iterator<Item = OsString>) -> io::Result<()> {
             frames,
             mute,
             &game,
+            "Paused (Enter to resume)",
         )?;
         print_report(machine.report());
         return Ok(());
@@ -197,7 +198,13 @@ fn load_machine(
     rom: PathBuf,
     bios: Option<PathBuf>,
     load_state: Option<PathBuf>,
+    stage: Option<u8>,
 ) -> io::Result<(Box<dyn ArcadeMachine>, [u32; 4])> {
+    if stage.is_some() && (load_state.is_some() || Dino::starting_stages(game).is_empty()) {
+        return Err(bad_argument(
+            "choose a supported native stage or a KWK4 save",
+        ));
+    }
     let saved = load_state.map(read_save).transpose()?;
     Ok(if game == "kof97" {
         let bios = bios.unwrap_or_else(|| rom.with_file_name("neogeo.zip"));
@@ -225,6 +232,8 @@ fn load_machine(
             };
             print_saved_pcs(state.main_pc(), state.sound_pc());
             Dino::from_kwk4(roms, state)?
+        } else if let Some(stage) = stage {
+            Dino::new_at_stage(roms, stage)?
         } else {
             Dino::new(roms)
         };

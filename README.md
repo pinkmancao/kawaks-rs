@@ -20,6 +20,8 @@ KOF97 默认从游戏 ZIP 同目录读取 `neogeo.zip`，也可通过 `--bios` �
 
 ## 图形启动器、键盘和摇杆
 
+点右上角的「中文」或 `English` 切换界面语言，下次启动会记住选择。游戏库显示中英文名称，可使用任一种名称或 ROM 短名搜索。选中游戏后，顶部会显示更完整的名称。
+
 用稳定版 Rust、CMake 和平台的 C/C++ 工具链构建 SDL2 前端。Windows 如果使用 Visual Studio 2022 自带的 CMake，可在 PowerShell 设定 `$env:CMAKE_GENERATOR = 'Visual Studio 17 2022'`。
 
 ```sh
@@ -33,6 +35,11 @@ cargo run --locked --release --features sdl2 -- --window --game wofa --rom ../ro
 - P1 键盘方向键、Z/X/C/V/B/N、1 开始、5 投币。P2 用 W/S/A/D、F/G/H/R/T/Y、2 开始、6 投币。本地游戏按 Enter 或小键盘 Enter 暂停和恢复，Esc 关闭窗口。局域网对战持续同步帧。
 - 摇杆按连接顺序分配 P1–P3，支持热插拔。默认方向为 X/Y 轴 0/1 和帽开关 0，动作键 0–5，开始 7，投币 6。设备的实际编号可用配置覆盖。`--mute` 关闭窗口音频。
 - 《三国志 II》的两款入口为 WOF WORLD（`wof`）和 WOF ASIA（`wofa`）。`--game wofa` 可读取合并包 `wof.zip` 中的亚洲版 ROM。该版本对应现有 `wofa.ks0` 与 `wofa.ks1`。
+
+
+点击 `STARTING STAGE` 下的 `CHOOSE` 可选择起点。《三国志 II》的 WOF WORLD 和 WOF ASIA 提供开局原生选关，包括奖励关、分段和最终关。选择后按平时的方式投币、开始并选人，游戏会在确认角色后加载所选场景。也可以选择列出的本地 KWK4 槽位，或通过 `OPEN` 选文件。把 `<游戏ID>-stage-<名称>.kwk4` 放在本地 `saves` 目录即可添加自定义关卡检查点，内容应来自对应游戏和 ROM 版本。
+
+点 `INPUT CONFIG` 下的 `CONFIGURE` 打开摇杆配置。选择 P1、P2 或 P3，再点击要修改的动作并按实体按钮；两个轴和方向帽可分别绑定。高亮显示当前映射收到的输入。重复绑定实体按钮时，配置窗口会交换原有绑定或解除冲突。还可清除绑定、调死区或恢复当前玩家默认值。`SAVE & APPLY` 保存到用户配置目录，下次从启动器打开会自动加载。原有输入文件可通过 `OPEN` 导入。
 
 输入配置可以只覆盖需要调整的条目。用 `none` 禁用按键、轴、帽开关；键盘名称使用 SDL 扫描码名称。
 

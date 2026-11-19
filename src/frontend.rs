@@ -19,24 +19,24 @@ use sdl2::{
 
 use crate::netplay::Peer;
 
-const ACTIONS: [&str; 12] = [
+pub(crate) const ACTIONS: [&str; 12] = [
     "up", "down", "left", "right", "button1", "button2", "button3", "start", "coin", "button4",
     "button5", "button6",
 ];
-const MASKS: [u16; 12] = [1, 2, 4, 8, 16, 32, 64, 0x1000, 0x2000, 0x80, 0x100, 0x200];
+pub(crate) const MASKS: [u16; 12] = [1, 2, 4, 8, 16, 32, 64, 0x1000, 0x2000, 0x80, 0x100, 0x200];
 
 #[derive(Clone, Copy)]
-struct Bindings {
+pub(crate) struct Bindings {
     keys: [Option<Scancode>; 12],
-    buttons: [Option<u32>; 12],
-    axis_x: Option<u32>,
-    axis_y: Option<u32>,
-    hat: Option<u32>,
-    deadzone: i16,
+    pub(crate) buttons: [Option<u32>; 12],
+    pub(crate) axis_x: Option<u32>,
+    pub(crate) axis_y: Option<u32>,
+    pub(crate) hat: Option<u32>,
+    pub(crate) deadzone: i16,
 }
 
 impl Bindings {
-    fn default_players() -> [Self; 3] {
+    pub(crate) fn default_players() -> [Self; 3] {
         use Scancode::*;
         let buttons = [
             None,
@@ -73,7 +73,7 @@ impl Bindings {
         ]
     }
 
-    fn load(path: Option<&Path>) -> io::Result<[Self; 3]> {
+    pub(crate) fn load(path: Option<&Path>) -> io::Result<[Self; 3]> {
         let mut players = Self::default_players();
         let Some(path) = path else { return Ok(players) };
         for (line, value) in std::fs::read_to_string(path)?.lines().enumerate() {
@@ -141,13 +141,66 @@ impl Bindings {
         Ok(players)
     }
 
+    pub(crate) fn save(players: &[Self; 3], path: &Path) -> io::Result<()> {
+        use std::fmt::Write as _;
+        let mut output = String::new();
+        let optional =
+            |value: Option<u32>| value.map_or_else(|| "none".to_owned(), |n| n.to_string());
+        for (index, bindings) in players.iter().enumerate() {
+            let player = index + 1;
+            for (i, action) in ACTIONS.iter().enumerate() {
+                let key = bindings.keys[i].map_or("none", Scancode::name);
+                writeln!(output, "p{player}.key.{action}={key}").unwrap();
+                writeln!(
+                    output,
+                    "p{player}.pad.{action}={}",
+                    optional(bindings.buttons[i])
+                )
+                .unwrap();
+            }
+            for (action, value) in [
+                ("axis_x", bindings.axis_x),
+                ("axis_y", bindings.axis_y),
+                ("hat", bindings.hat),
+            ] {
+                writeln!(output, "p{player}.pad.{action}={}", optional(value)).unwrap();
+            }
+            writeln!(output, "p{player}.pad.deadzone={}", bindings.deadzone).unwrap();
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&temporary, output)?;
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            let _ = std::fs::remove_file(temporary);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn sample(self, keys: &sdl2::keyboard::KeyboardState<'_>, pad: Option<&Joystick>) -> u16 {
+        let mut buttons = self.sample_pad(pad);
+        for (index, mask) in MASKS.into_iter().enumerate() {
+            if self.keys[index].is_some_and(|key| keys.is_scancode_pressed(key)) {
+                buttons |= mask;
+            }
+        }
+        if buttons & 3 == 3 {
+            buttons &= !3;
+        }
+        if buttons & 12 == 12 {
+            buttons &= !12;
+        }
+        buttons
+    }
+
+    pub(crate) fn sample_pad(self, pad: Option<&Joystick>) -> u16 {
         let mut buttons = 0;
         for (index, mask) in MASKS.into_iter().enumerate() {
-            if self.keys[index].is_some_and(|key| keys.is_scancode_pressed(key))
-                || pad
-                    .zip(self.buttons[index])
-                    .is_some_and(|(pad, button)| pad.button(button).unwrap_or(false))
+            if pad
+                .zip(self.buttons[index])
+                .is_some_and(|(pad, button)| pad.button(button).unwrap_or(false))
             {
                 buttons |= mask;
             }
@@ -184,12 +237,6 @@ impl Bindings {
                 HatState::LeftDown => 6,
             };
         }
-        if buttons & 3 == 3 {
-            buttons &= !3;
-        }
-        if buttons & 12 == 12 {
-            buttons &= !12;
-        }
         buttons
     }
 }
@@ -201,6 +248,7 @@ pub fn run(
     frames: Option<u64>,
     mute: bool,
     game: &str,
+    pause_label: &str,
 ) -> io::Result<()> {
     let bindings = Bindings::load(config)?;
     let sdl = sdl2::init().map_err(sdl_error)?;
@@ -208,7 +256,7 @@ pub fn run(
     let joystick = sdl.joystick().map_err(sdl_error)?;
     let mut events = sdl.event_pump().map_err(sdl_error)?;
     let title = format!("Kawaks Rust · {game}");
-    let paused_title = format!("{title} · Paused (Enter to resume)");
+    let paused_title = format!("{title} · {pause_label}");
     let window = video
         .window(&title, FRAME_WIDTH as u32 * 2, FRAME_HEIGHT as u32 * 2)
         .position_centered()
@@ -355,7 +403,11 @@ pub fn run(
     Ok(())
 }
 
-fn add_pad(joystick: &sdl2::JoystickSubsystem, players: &mut [Option<Joystick>; 3], index: u32) {
+pub(crate) fn add_pad(
+    joystick: &sdl2::JoystickSubsystem,
+    players: &mut [Option<Joystick>; 3],
+    index: u32,
+) {
     let Ok(device) = joystick.open(index) else {
         return;
     };
@@ -387,6 +439,30 @@ fn sdl_error(error: impl std::fmt::Display) -> io::Error {
 mod tests {
     use super::*;
     use sdl2::sys;
+
+    #[test]
+    fn saved_joystick_profile_preserves_keyboard_and_axis_mappings() {
+        let path = std::env::temp_dir().join(format!("kawaks-joystick-{}.cfg", std::process::id()));
+        let mut bindings = Bindings::default_players();
+        bindings[0].keys[4] = Some(Scancode::J);
+        bindings[1].buttons[7] = Some(11);
+        bindings[1].axis_y = Some(4);
+        bindings[1].hat = None;
+        bindings[1].deadzone = 18000;
+        Bindings::save(&bindings, &path).unwrap();
+        bindings[1].buttons[7] = Some(10);
+        Bindings::save(&bindings, &path).unwrap();
+        let loaded = Bindings::load(Some(&path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+        for (written, read) in bindings.iter().zip(loaded) {
+            assert_eq!(written.keys, read.keys);
+            assert_eq!(written.buttons, read.buttons);
+            assert_eq!(written.axis_x, read.axis_x);
+            assert_eq!(written.axis_y, read.axis_y);
+            assert_eq!(written.hat, read.hat);
+            assert_eq!(written.deadzone, read.deadzone);
+        }
+    }
 
     #[test]
     fn virtual_arcade_stick_reaches_the_logical_input_map() {

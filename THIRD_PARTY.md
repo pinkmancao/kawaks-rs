@@ -45,3 +45,5 @@ under GPL-2.0-or-later. Its YM2612 and AY-3-8910 dependencies and their licenses
 are recorded in the upstream crates. Neo Geo hardware behavior was cross-checked
 with [MAME's Neo Geo driver](https://github.com/mamedev/mame/blob/master/src/mame/snk/neogeo.cpp)
 and [uPD4990A model](https://github.com/mamedev/mame/blob/master/src/devices/machine/upd1990a.cpp).
+
+The English game names in [titles.tsv](src/gui/titles.tsv) reference MAME game metadata. The bundled bitmap glyph atlas is derived from [Noto Sans CJK SC Regular](https://github.com/notofonts/noto-cjk) under the SIL Open Font License 1.1. See [font license](src/gui/OFL-Noto.txt) and [rasterization script](tools/rasterize-ui-font.py).

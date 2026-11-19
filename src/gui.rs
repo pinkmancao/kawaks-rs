@@ -1,4 +1,7 @@
 mod catalog;
+mod i18n;
+mod pad_setup;
+mod stage_picker;
 
 use std::{
     io,
@@ -23,10 +26,13 @@ use sdl2::{
     video::Window,
 };
 
+use i18n::Language;
+
 use crate::{frontend, load_machine, netplay::Peer};
 
 const WIDTH: u32 = 820;
-const HEIGHT: u32 = 562;
+const HEIGHT: u32 = 616;
+const LANGUAGE: [i32; 4] = [674, 22, 114, 30];
 const INK: Color = Color::RGB(236, 244, 250);
 const MUTED: Color = Color::RGB(167, 184, 202);
 const ACCENT: Color = Color::RGB(146, 225, 240);
@@ -35,13 +41,13 @@ const PAGE_SIZE: usize = 12;
 const SEARCH: [i32; 4] = [226, 60, 319, 25];
 const PREVIOUS: [i32; 4] = [696, 60, 42, 25];
 const NEXT: [i32; 4] = [746, 60, 42, 25];
-const ROM: [i32; 4] = [32, 216, 756, 41];
-const SAVE: [i32; 4] = [32, 264, 756, 41];
-const BIOS: [i32; 4] = [32, 312, 756, 41];
-const INPUT: [i32; 4] = [32, 360, 756, 41];
-const AUDIO: [i32; 4] = [647, 420, 141, 32];
-const ADDRESS: [i32; 4] = [300, 420, 333, 32];
-const START: [i32; 4] = [606, 486, 182, 44];
+const ROM: [i32; 4] = [32, 270, 756, 41];
+const SAVE: [i32; 4] = [32, 318, 756, 41];
+const BIOS: [i32; 4] = [32, 366, 756, 41];
+const INPUT: [i32; 4] = [32, 414, 756, 41];
+const AUDIO: [i32; 4] = [647, 474, 141, 32];
+const ADDRESS: [i32; 4] = [300, 474, 333, 32];
+const START: [i32; 4] = [606, 540, 182, 44];
 const CLEAR_COLUMN: i32 = 742;
 const HOST_ADDRESS: &str = "0.0.0.0:22651";
 const JOIN_ADDRESS: &str = "127.0.0.1:22651";
@@ -66,7 +72,7 @@ impl Mode {
     ];
 
     fn rect(index: usize) -> Rect {
-        Rect::new(32 + index as i32 * 88, 420, 82, 32)
+        Rect::new(32 + index as i32 * 88, 474, 82, 32)
     }
 }
 
@@ -80,11 +86,13 @@ enum Edit {
 
 struct Settings {
     catalog: Vec<catalog::Entry>,
+    language: Language,
     search: String,
     page: usize,
     game: usize,
     rom: PathBuf,
     save: Option<PathBuf>,
+    stage: Option<u8>,
     bios: Option<PathBuf>,
     input: Option<PathBuf>,
     mute: bool,
@@ -96,13 +104,15 @@ impl Settings {
     fn new() -> Self {
         let mut settings = Self {
             catalog: catalog::discover(),
+            language: Language::load(),
             search: String::new(),
             page: 0,
             game: 0,
             rom: PathBuf::new(),
             save: None,
+            stage: None,
             bios: None,
-            input: None,
+            input: Some(pad_setup::profile_path()).filter(|path| path.is_file()),
             mute: false,
             mode: Mode::Local,
             address: String::new(),
@@ -140,6 +150,7 @@ impl Settings {
         self.game = index;
         self.rom = self.entry().rom.clone();
         self.save = None;
+        self.stage = None;
         if self.entry().driver != Some("kof97") {
             self.bios = None;
         }
@@ -168,13 +179,19 @@ impl Settings {
             io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!(
-                    "{} has a local ROM but this version has no compatible driver.",
-                    self.entry().label
+                    "{}: {}",
+                    self.entry().title(self.language),
+                    self.language.tr("No compatible driver for this ROM.")
                 ),
             )
         })?;
-        let (machine, crc) =
-            load_machine(game, self.rom.clone(), self.bios.clone(), self.save.clone())?;
+        let (machine, crc) = load_machine(
+            game,
+            self.rom.clone(),
+            self.bios.clone(),
+            self.save.clone(),
+            self.stage,
+        )?;
         Ok((
             Launch {
                 machine,
@@ -214,7 +231,8 @@ pub fn run() -> io::Result<()> {
             settings.input.as_deref(),
             None,
             settings.mute,
-            launch.game,
+            settings.language.title(launch.game),
+            settings.language.tr("Paused (Enter to resume)"),
         ) {
             Ok(()) => String::new(),
             Err(error)
@@ -277,6 +295,8 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
+        let mut configure_pad = false;
+        let mut pick_stage = false;
         for event in events
             .wait_event_timeout(22)
             .into_iter()
@@ -391,6 +411,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                         settings.rom = path;
                     } else {
                         settings.save = Some(path);
+                        settings.stage = None;
                     }
                 }
                 Event::MouseWheel { y, .. } if y != 0 && pending.is_none() => {
@@ -403,7 +424,14 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                     ..
                 } => {
                     let point = Point::new(x, y);
-                    if bounds(START).contains_point(point) {
+                    if bounds(LANGUAGE).contains_point(point) {
+                        settings.language = settings.language.toggled();
+                        *status = settings
+                            .language
+                            .save()
+                            .err()
+                            .map_or_else(String::new, |error| error.to_string());
+                    } else if bounds(START).contains_point(point) {
                         start = true;
                     } else if pending.is_none() {
                         editing = if bounds(SEARCH).contains_point(point) {
@@ -437,36 +465,52 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                             status.clear();
                         } else if bounds(ROM).contains_point(point) {
                             if let Some(path) = open_file(
-                                "Open arcade ROM",
+                                settings.language.tr("Open arcade ROM"),
                                 &settings.rom,
-                                Some((&["*.zip"], "ROM archive")),
+                                Some((&["*.zip"], settings.language.tr("ROM archive"))),
                             ) {
                                 settings.rom = path;
                             }
                         } else if bounds(SAVE).contains_point(point) {
-                            let default = settings.default_save();
-                            choose_optional(
-                                x,
-                                &mut settings.save,
-                                "Open KWK4 state",
-                                &default,
-                                Some((&["*.ks?", "*.kwk", "*.kwk4"], "KWK4 save")),
-                            );
+                            if x < 683 {
+                                pick_stage = true;
+                                break;
+                            } else if x >= CLEAR_COLUMN {
+                                settings.stage = None;
+                                settings.save = None;
+                            } else {
+                                let default = settings.default_save();
+                                if let Some(path) = open_file(
+                                    settings.language.tr("Open KWK4 state"),
+                                    settings.save.as_deref().unwrap_or(&default),
+                                    Some((
+                                        &["*.ks?", "*.kwk", "*.kwk4"],
+                                        settings.language.tr("KWK4 save"),
+                                    )),
+                                ) {
+                                    settings.stage = None;
+                                    settings.save = Some(path);
+                                }
+                            }
                         } else if settings.entry().driver == Some("kof97")
                             && bounds(BIOS).contains_point(point)
                         {
                             choose_optional(
                                 x,
                                 &mut settings.bios,
-                                "Open Neo Geo BIOS",
+                                settings.language.tr("Open Neo Geo BIOS"),
                                 &settings.rom.with_file_name("neogeo.zip"),
-                                Some((&["*.zip"], "BIOS archive")),
+                                Some((&["*.zip"], settings.language.tr("BIOS archive"))),
                             );
                         } else if bounds(INPUT).contains_point(point) {
+                            if x < 683 {
+                                configure_pad = true;
+                                break;
+                            }
                             choose_optional(
                                 x,
                                 &mut settings.input,
-                                "Open input configuration",
+                                settings.language.tr("Open input configuration"),
                                 Path::new("input.cfg"),
                                 None,
                             );
@@ -540,6 +584,42 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                 }
             }
         }
+        if pick_stage {
+            let default = settings.default_save();
+            let game = &settings.entry().id;
+            let directory = default.parent().unwrap_or_else(|| Path::new("."));
+            match stage_picker::run(&sdl, &mut events, game, directory, settings.language) {
+                Ok(Some(start)) => {
+                    settings.stage = None;
+                    settings.save = None;
+                    match start {
+                        stage_picker::Start::Default => {}
+                        stage_picker::Start::Stage(index) => settings.stage = Some(index),
+                        stage_picker::Start::Checkpoint(path) => settings.save = Some(path),
+                    }
+                    status.clear();
+                }
+                Ok(None) => {}
+                Err(error) => *status = error.to_string(),
+            }
+            dirty = true;
+        }
+        if configure_pad {
+            match pad_setup::run(
+                &sdl,
+                &mut events,
+                settings.input.as_deref(),
+                settings.language,
+            ) {
+                Ok(Some(path)) => {
+                    settings.input = Some(path);
+                    *status = "Joystick settings saved and applied".to_owned();
+                }
+                Ok(None) => {}
+                Err(error) => *status = error.to_string(),
+            }
+            dirty = true;
+        }
         if dirty {
             draw(&mut canvas, settings, status, pending.is_some(), editing)
                 .map_err(io::Error::other)?;
@@ -579,9 +659,9 @@ fn edit_address(address: &mut String, selected: &mut bool, text: &str) {
 
 fn game_rect(index: usize) -> Rect {
     Rect::new(
-        32 + (index % 6) as i32 * 127,
-        94 + (index / 6) as i32 * 54,
-        121,
+        32 + (index % 4) as i32 * 191,
+        94 + (index / 4) as i32 * 54,
+        183,
         49,
     )
 }
@@ -596,7 +676,24 @@ fn draw(
     canvas.set_draw_color(Color::RGB(14, 23, 34));
     canvas.clear();
     text(canvas, 32, 26, "KAWAKS RUST", 3, INK, 32)?;
-    text(canvas, 32, 68, "ROM LIBRARY", 1, ACCENT, 16)?;
+    let lang = settings.language;
+    let language_button = bounds(LANGUAGE);
+    box_color(canvas, language_button, PANEL)?;
+    text(
+        canvas,
+        690,
+        33,
+        if lang == Language::English {
+            "中文"
+        } else {
+            "English"
+        },
+        1,
+        ACCENT,
+        12,
+    )?;
+    text(canvas, 320, 33, settings.entry().title(lang), 1, INK, 42)?;
+    text(canvas, 32, 68, lang.tr("ROM LIBRARY"), 1, ACCENT, 16)?;
     box_color(
         canvas,
         bounds(SEARCH),
@@ -611,7 +708,7 @@ fn draw(
         236,
         68,
         if settings.search.is_empty() {
-            "Search name or system"
+            lang.tr("Search name or system")
         } else {
             &settings.search
         },
@@ -640,7 +737,7 @@ fn draw(
         text(canvas, rect.x() + 16, 68, label, 1, ACCENT, 1)?;
     }
     if filtered.is_empty() {
-        text(canvas, 32, 112, "No matching ROMs", 1, MUTED, 24)?;
+        text(canvas, 32, 112, lang.tr("No matching ROMs"), 1, MUTED, 24)?;
     }
     for (row, &index) in filtered
         .iter()
@@ -663,28 +760,33 @@ fn draw(
             canvas,
             rect.x() + 9,
             rect.y() + 9,
-            &entry.label,
+            entry.title(lang),
             1,
             if entry.driver.is_some() { INK } else { MUTED },
-            13,
+            20,
         )?;
-        let detail = if entry.driver.is_none() {
-            format!("{} / N/A", entry.platform)
-        } else if entry.present {
-            entry.platform.to_owned()
+        let detail = if !entry.present {
+            lang.tr("ROM MISSING").to_owned()
+        } else if entry.driver.is_none() {
+            format!("{} / {}", entry.id, lang.tr("N/A"))
         } else {
-            "ROM MISSING".to_owned()
+            format!("{} / {}", entry.id, entry.platform)
         };
-        text(canvas, rect.x() + 9, rect.y() + 29, &detail, 1, MUTED, 13)?;
+        text(canvas, rect.x() + 9, rect.y() + 31, &detail, 1, MUTED, 20)?;
     }
     let bios_enabled = settings.entry().driver == Some("kof97");
+    let stage = settings.stage.and_then(|index| {
+        kawaks_rs::Dino::starting_stages(&settings.entry().id)
+            .get(usize::from(index))
+            .copied()
+    });
     let rows = [
         (ROM, "ROM", Some(settings.rom.as_path()), "Choose ZIP", true),
         (
             SAVE,
-            "KWK4 STATE",
+            "STARTING STAGE",
             settings.save.as_deref(),
-            "Cold boot",
+            stage.unwrap_or("Normal start"),
             true,
         ),
         (
@@ -700,7 +802,7 @@ fn draw(
         ),
         (
             INPUT,
-            "KEY / PAD MAP",
+            "INPUT CONFIG",
             settings.input.as_deref(),
             "Default controls",
             true,
@@ -721,7 +823,7 @@ fn draw(
             canvas,
             rect.x() + 12,
             rect.y() + 16,
-            label,
+            lang.tr(label),
             1,
             if enabled { ACCENT } else { MUTED },
             16,
@@ -731,13 +833,30 @@ fn draw(
             canvas,
             174,
             rect.y() + 16,
-            display.as_deref().unwrap_or(placeholder),
+            display.as_deref().unwrap_or_else(|| lang.tr(placeholder)),
             1,
             INK,
-            61,
+            if region == INPUT || region == SAVE {
+                48
+            } else {
+                61
+            },
         )?;
         if enabled {
-            text(canvas, 699, rect.y() + 16, "OPEN", 1, ACCENT, 8)?;
+            if region == INPUT {
+                text(
+                    canvas,
+                    580,
+                    rect.y() + 16,
+                    lang.tr("CONFIGURE"),
+                    1,
+                    ACCENT,
+                    9,
+                )?;
+            } else if region == SAVE {
+                text(canvas, 580, rect.y() + 16, lang.tr("CHOOSE"), 1, ACCENT, 9)?;
+            }
+            text(canvas, 699, rect.y() + 16, lang.tr("OPEN"), 1, ACCENT, 8)?;
             if region != ROM {
                 text(canvas, 764, rect.y() + 16, "X", 1, MUTED, 2)?;
             }
@@ -754,7 +873,15 @@ fn draw(
                 PANEL
             },
         )?;
-        text(canvas, rect.x() + 8, rect.y() + 12, name, 1, INK, 10)?;
+        text(
+            canvas,
+            rect.x() + 8,
+            rect.y() + 12,
+            lang.tr(name),
+            1,
+            INK,
+            10,
+        )?;
     }
     if settings.mode != Mode::Local {
         box_color(
@@ -766,18 +893,18 @@ fn draw(
                 PANEL
             },
         )?;
-        text(canvas, 311, 432, &settings.address, 1, INK, 39)?;
+        text(canvas, 311, 486, &settings.address, 1, INK, 39)?;
     }
     box_color(canvas, bounds(AUDIO), PANEL)?;
     text(
         canvas,
         658,
-        432,
-        if settings.mute {
+        486,
+        lang.tr(if settings.mute {
             "AUDIO OFF"
         } else {
             "AUDIO ON"
-        },
+        }),
         1,
         INK,
         14,
@@ -794,20 +921,20 @@ fn draw(
     text(
         canvas,
         621,
-        501,
-        if pending {
+        555,
+        lang.tr(if pending {
             "CANCEL"
         } else if settings.entry().driver.is_some() {
             "PLAY"
         } else {
             "N/A"
-        },
+        }),
         2,
         Color::RGB(14, 23, 34),
         10,
     )?;
-    for (index, line) in wrap(status, 67).iter().take(3).enumerate() {
-        text(canvas, 32, 489 + index as i32 * 17, line, 1, MUTED, 67)?;
+    for (index, line) in wrap(lang.tr(status), 67).iter().take(3).enumerate() {
+        text(canvas, 32, 543 + index as i32 * 17, line, 1, MUTED, 67)?;
     }
     canvas.present();
     Ok(())
@@ -843,21 +970,48 @@ fn text(
     color: Color,
     max: usize,
 ) -> Result<(), String> {
-    let mut pixels = Vec::new();
-    let clipped = value.chars().count() > max;
-    let suffix = if clipped { "..." } else { "" };
-    for (index, ch) in value
+    let advance = |ch| {
+        if i18n::wide_glyph(ch).is_some() {
+            14
+        } else {
+            8
+        }
+    };
+    let width = max * 8;
+    let clipped = value.chars().map(advance).sum::<usize>() > width;
+    let suffix = if clipped && width >= 24 { "..." } else { "" };
+    let limit = width - suffix.len() * 8;
+    let mut pos = 0;
+    let glyphs = value
         .chars()
-        .take(max - suffix.len())
-        .chain(suffix.chars())
-        .enumerate()
-    {
-        if let Some(bitmap) = BASIC_FONTS.get(ch).or_else(|| BASIC_FONTS.get('?')) {
+        .take_while(|&ch| {
+            pos += advance(ch);
+            pos <= limit
+        })
+        .chain(suffix.chars());
+    let mut pixels = Vec::new();
+    let mut offset = 0;
+    for ch in glyphs {
+        if let Some(bitmap) = i18n::wide_glyph(ch) {
+            for (row, pair) in bitmap.chunks_exact(2).enumerate() {
+                let bits = u16::from_le_bytes([pair[0], pair[1]]);
+                for column in 0..14 {
+                    if bits & (1 << column) != 0 {
+                        pixels.push(Rect::new(
+                            x + (offset + column) * scale,
+                            y + (row as i32 - 3) * scale,
+                            scale as u32,
+                            scale as u32,
+                        ));
+                    }
+                }
+            }
+        } else if let Some(bitmap) = BASIC_FONTS.get(ch).or_else(|| BASIC_FONTS.get('?')) {
             for (row, bits) in bitmap.into_iter().enumerate() {
                 for column in 0..8 {
                     if bits & (1 << column) != 0 {
                         pixels.push(Rect::new(
-                            x + (index as i32 * 8 + column) * scale,
+                            x + (offset + column) * scale,
                             y + row as i32 * scale,
                             scale as u32,
                             scale as u32,
@@ -866,6 +1020,7 @@ fn text(
                 }
             }
         }
+        offset += advance(ch) as i32;
     }
     canvas.set_draw_color(color);
     canvas.fill_rects(&pixels)
@@ -917,7 +1072,10 @@ mod tests {
             let offset = (y * WIDTH as usize + x) * 3;
             &rgb[offset..offset + 3]
         };
-        assert_eq!(pixel(32 + 127 * 5 + 3, 98), &[46, 83, 105]);
-        assert_eq!(pixel(610, 489), &[146, 225, 240]);
+        assert_eq!(
+            pixel(game_rect(5).x() as usize + 3, game_rect(5).y() as usize + 4),
+            &[46, 83, 105]
+        );
+        assert_eq!(pixel(610, 543), &[146, 225, 240]);
     }
 }

@@ -84,7 +84,30 @@ pub struct FrameReport {
     pub state_crc32: u32,
 }
 
+struct StageStart {
+    init_pc: u32,
+    index: u8,
+}
+
+const WOF_STAGES: [&str; 14] = [
+    "Stage 1",
+    "Stage 2",
+    "Bonus 1 - Eating",
+    "Stage 3",
+    "Meimei ambush",
+    "Stage 4",
+    "Stage 5 - Part 1",
+    "Stage 5 - Part 2",
+    "Stage 6",
+    "Bonus 2 - Duel",
+    "Stage 7",
+    "Stage 8",
+    "Stage 9",
+    "Final - Cao Cao",
+];
+
 pub struct Dino {
+    stage_start: Option<StageStart>,
     main: ConfiguredCore<AutoInterruptController, Bus>,
     sound: Z80NMOS,
     video: video::Video,
@@ -110,6 +133,7 @@ impl Dino {
         Self {
             main,
             video,
+            stage_start: None,
             sound: Z80NMOS::default(),
             sound_clock: TsCounter::from(0),
             main_deadline: 0,
@@ -124,6 +148,33 @@ impl Dino {
             #[cfg(test)]
             irq_accepts: Vec::new(),
         }
+    }
+
+    /// Native starting stages for the verified ROM variants, in program order.
+    pub fn starting_stages(game: &str) -> &'static [&'static str] {
+        if matches!(game, "wof" | "wofa") {
+            &WOF_STAGES
+        } else {
+            &[]
+        }
+    }
+
+    pub fn new_at_stage(roms: DinoRoms, index: u8) -> io::Result<Self> {
+        let init_pc = match roms.0.game {
+            rom::Game::Wof => 0xae48,
+            rom::Game::Wofa => 0xb20c,
+            _ => {
+                return Err(invalid(
+                    "native starting stages are unavailable for this ROM",
+                ))
+            }
+        };
+        if usize::from(index) >= WOF_STAGES.len() {
+            return Err(invalid("starting stage is out of range"));
+        }
+        let mut machine = Self::new(roms);
+        machine.stage_start = Some(StageStart { init_pc, index });
+        Ok(machine)
     }
 
     /// Import the hardware state understood by this core. Rebuild all memory
@@ -276,11 +327,19 @@ impl Dino {
 
     fn advance_main(&mut self, budget: u64) -> io::Result<()> {
         self.main_deadline += budget;
-        if self.main_deadline > self.main_elapsed {
-            let consumed = self
-                .main
-                .execute((self.main_deadline - self.main_elapsed) as i32)
-                .0;
+        while self.main_deadline > self.main_elapsed {
+            let remaining = (self.main_deadline - self.main_elapsed) as i32;
+            let consumed = match &self.stage_start {
+                Some(stage) if self.main.pc == stage.init_pc => {
+                    // The game's new-match routine copies D0 into the stage byte.
+                    // It then loads the scene and its associated gameplay state.
+                    self.main.dar[0] = u32::from(stage.index);
+                    self.stage_start = None;
+                    self.main.execute(remaining).0
+                }
+                Some(_) => self.main.execute1().0,
+                None => self.main.execute(remaining).0,
+            };
             if consumed <= 0 || self.main.processing_state == ProcessingState::Halted {
                 return Err(invalid(format!("68000 halted at {:06x}", self.main.pc)));
             }
@@ -308,6 +367,9 @@ impl Dino {
         let work_crc32 = crc32fast::hash(&bus.work);
         let graphics_ram_crc32 = crc32fast::hash(&bus.graphics);
         let mut state = crc32fast::Hasher::new();
+        if let Some(stage) = &self.stage_start {
+            state.update(&[stage.index]);
+        }
         for value in self.main.dar {
             state.update(&value.to_le_bytes());
         }

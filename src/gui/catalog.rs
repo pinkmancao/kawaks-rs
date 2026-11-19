@@ -4,11 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::i18n::Language;
+
 const PLATFORMS: [(&str, &str); 3] = [("cps1", "CPS1"), ("cps2", "CPS2"), ("neogeo", "NEO GEO")];
 
 pub(super) struct Entry {
     pub id: String,
-    pub label: String,
     pub platform: &'static str,
     pub driver: Option<&'static str>,
     pub rom: PathBuf,
@@ -16,9 +17,15 @@ pub(super) struct Entry {
 }
 
 impl Entry {
+    pub fn title(&self, language: Language) -> &str {
+        language.title(&self.id)
+    }
+
     pub fn matches(&self, query: &str) -> bool {
         self.id.contains(query)
-            || self.label.to_ascii_lowercase().contains(query)
+            || [Language::English, Language::Chinese]
+                .into_iter()
+                .any(|lang| self.title(lang).to_ascii_lowercase().contains(query))
             || self.platform.to_ascii_lowercase().contains(query)
             || (matches!(self.driver, Some("wof" | "wofa")) && "三国志ii 三国志2".contains(query))
     }
@@ -66,7 +73,6 @@ fn collect(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Entry> {
                     continue;
                 }
                 archives.push(Entry {
-                    label: id.to_ascii_uppercase(),
                     id,
                     platform,
                     driver: None,
@@ -78,13 +84,13 @@ fn collect(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Entry> {
     }
 
     let mut games = Vec::<Entry>::new();
-    for (id, name, (directory, platform), archive) in [
-        ("dino", "DINO", PLATFORMS[0], "dino"),
-        ("wof", "WOF WORLD", PLATFORMS[0], "wof"),
-        ("wofa", "WOF ASIA", PLATFORMS[0], "wof"),
-        ("punisher", "PUNISHER", PLATFORMS[0], "punisher"),
-        ("ssf2", "SSF2", PLATFORMS[1], "ssf2"),
-        ("kof97", "KOF97", PLATFORMS[2], "kof97"),
+    for (id, (directory, platform), archive) in [
+        ("dino", PLATFORMS[0], "dino"),
+        ("wof", PLATFORMS[0], "wof"),
+        ("wofa", PLATFORMS[0], "wof"),
+        ("punisher", PLATFORMS[0], "punisher"),
+        ("ssf2", PLATFORMS[1], "ssf2"),
+        ("kof97", PLATFORMS[2], "kof97"),
     ] {
         let index = archives
             .iter()
@@ -112,7 +118,6 @@ fn collect(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Entry> {
         });
         games.push(Entry {
             id: id.to_owned(),
-            label: name.to_owned(),
             platform,
             driver: Some(id),
             rom,
@@ -140,6 +145,8 @@ mod tests {
         let wof = entries.iter().find(|game| game.id == "wofa").unwrap();
         assert_eq!(wof.rom, root.join("cps1/wof.zip"));
         assert!(wof.present && wof.matches("三国志"));
+        assert!(wof.matches("sangokushi"));
+        assert!(wof.matches("wofa"));
         assert_eq!(entries.iter().filter(|entry| entry.id == "1941").count(), 1);
         assert!(entries
             .iter()
