@@ -14,3 +14,6 @@ captures/
 *.kwk4
 *.ks[0-9]
 *.wav
+
+# Locally built release archives
+/dist/

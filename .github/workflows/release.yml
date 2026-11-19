@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read and validate the version
+        id: version
+        run: |
+          set -euo pipefail
+          tag="v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match Cargo version $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  packages:
+    name: SDL2 ${{ matrix.platform }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows-x86_64
+            host: x86_64-pc-windows-msvc
+            binary: target/release/kawaks-rs.exe
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+            host: x86_64-unknown-linux-gnu
+            binary: target/release/kawaks-rs
+          - runner: macos-15
+            platform: macos-arm64
+            host: aarch64-apple-darwin
+            binary: target/release/kawaks-rs
+          - runner: macos-15-intel
+            platform: macos-x86_64
+            host: x86_64-apple-darwin
+            binary: target/release/kawaks-rs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      BINARY: ${{ matrix.binary }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Linux SDL2 and Xvfb build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxinerama-dev libxss-dev libxxf86vm-dev libgl1-mesa-dev libasound2-dev libpulse-dev xvfb xauth x11-utils
+      - name: Build the native SDL2 executable
+        shell: bash
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          rustc -vV | grep -Fx "host: $EXPECTED_HOST"
+          cargo build --locked --release --features sdl2 --bin kawaks-rs
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            arch=x86_64
+            [[ "$EXPECTED_HOST" != aarch64-* ]] || arch=arm64
+            test "$(lipo -archs "$BINARY")" = "$arch"
+          fi
+      - name: Run SDL2 and core tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: cargo test --locked --release --features sdl2 --all-targets -- --test-threads=1
+      - name: Verify Windows GUI startup
+        if: runner.os == 'Windows'
+        run: python tools/check-release-window.py $env:BINARY
+      - name: Verify Linux GUI startup
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum python tools/check-release-window.py "$BINARY"
+      - name: Verify macOS GUI startup
+        if: runner.os == 'macOS'
+        run: swift tools/check-macos-window.swift "$BINARY"
+      - name: Package executable and notices
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: python tools/package-release.py "$PLATFORM" "$BINARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  source:
+    name: Corresponding source
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package tracked source and locked dependency sources
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-tree -r --name-only HEAD | grep -Ei '(^|/)(roms|saves|outputs|captures?)/|\.(zip|rom|chd|kwk4?|ks[0-9]|wav|exe)$'; then
+            echo 'Local game data is tracked; refusing to package the tree.' >&2
+            exit 1
+          fi
+          source_root="kawaks-rs-$TAG-source"
+          mkdir -p "$source_root" dist
+          git archive HEAD | tar -x -C "$source_root"
+          (
+            cd "$source_root"
+            mkdir -p .cargo
+            cargo vendor --locked --versioned-dirs vendor > .cargo/config.toml
+            cargo metadata --locked --offline --format-version 1 > /dev/null
+          )
+          tar -czf "dist/$source_root.tar.gz" "$source_root"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, packages, source]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify assets, add checksums, and publish
+        run: |
+          set -euo pipefail
+          cd dist
+          assets=(
+            "kawaks-rs-$TAG-windows-x86_64.zip"
+            "kawaks-rs-$TAG-linux-x86_64.tar.gz"
+            "kawaks-rs-$TAG-macos-arm64.tar.gz"
+            "kawaks-rs-$TAG-macos-x86_64.tar.gz"
+            "kawaks-rs-$TAG-source.tar.gz"
+          )
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
+          assets+=(SHA256SUMS.txt)
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft'); then
+            test "$draft" = true
+            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --draft
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -2,6 +2,12 @@
 
 跨平台 Rust 街机模拟核心，支持 CPS1 QSound 的 `dino`、`wof`、`wofa`、`punisher`，以及 CPS2 的 `ssf2` 和 Neo Geo 的 `kof97`。核心可无窗口运行，SDL2 窗口作为可选前端。从本地 ZIP 校验和装配 ROM，运行 68000 和 Kabuki Z80，并从 CPS1 图层、精灵和调色板生成 384×224 RGB 画面。QSound 合成器根据 Z80 写入的命令混合 16 个 PCM 声道，按 WinKawaks 1.65 的 22,050 Hz 设置，每帧输出 367 个 16 位立体声采样帧。需要当前稳定版 Rust。
 
+## 下载发行版
+
+从 [GitHub Releases](https://github.com/pinkmancao/kawaks-rs/releases) 下载对应的 SDL2 包。Windows x86-64 解压后运行 `kawaks-rs.exe`。Linux x86-64 和 macOS 解开 `.tar.gz` 后，可在图形会话中运行 `./kawaks-rs --gui`。Mac 请按机型选择 Apple Silicon（arm64）或 Intel（x86-64）。使用本地 ROM，可将 `KAWAKS_ROM_DIR` 指向自己的 ROM 根目录。
+
+每个 Release 附有 `SHA256SUMS.txt` 和含锁定依赖源码的 `-source.tar.gz`。项目自有代码按 [GPL-3.0-or-later](LICENSE) 发布，第三方组件保留各自许可。
+
 ## 运行
 
 从本目录运行。以下路径对应项目位于 WinKawaks 目录中的布局，Windows、Linux 和 macOS 使用相同的命令。
