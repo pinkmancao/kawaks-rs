@@ -1,0 +1,40 @@
+name: Core tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+
+  macos-gui:
+    name: macOS SDL2 (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native SDL2 launcher
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          cargo build --locked --release --features sdl2 --bin kawaks-rs
+          test "$(lipo -archs target/release/kawaks-rs)" = "$EXPECTED_ARCH"
+      - name: Open and verify a Cocoa window
+        timeout-minutes: 3
+        run: swift tools/check-macos-window.swift target/release/kawaks-rs

@@ -1,0 +1,16 @@
+/target/
+/.build-local/
+/outputs/
+
+# Local game data and original-emulator captures
+roms/
+saves/
+capture/
+captures/
+*.zip
+*.rom
+*.chd
+*.kwk
+*.kwk4
+*.ks[0-9]
+*.wav
