@@ -28,11 +28,11 @@ cargo run --locked --release --features sdl2 -- --window --game dino --rom ../ro
 cargo run --locked --release --features sdl2 -- --window --game wofa --rom ../roms/cps1/wof.zip --load-state ../saves/wofa.ks0 --input-config input.cfg
 ```
 
-启动器可以选择游戏、ROM、Neo Geo BIOS、KWK4 存档和输入配置。文件对话框会从相关目录打开，也能从可执行文件附近查找默认 ROM。支持拖入 ROM 或存档，并可从窗口选择本地、主机或加入局域网。退出游戏窗口会返回启动器。启用 `sdl2` 构建后，无参数启动也会打开启动器。
+启动器扫描本地的 CPS1、CPS2 和 Neo Geo ROM ZIP，可搜索名称或平台，并用箭头或鼠标滚轮翻页。带 N/A 的游戏仍缺兼容驱动。可用 `KAWAKS_ROM_DIR` 指定 ROM 根目录。启动器可以选择 ROM、Neo Geo BIOS、KWK4 存档和输入配置。文件对话框会从相关目录打开，也能从可执行文件附近查找默认 ROM。支持拖入 ROM 或存档，并可从窗口选择本地、主机或加入局域网。退出游戏窗口会返回启动器。启用 `sdl2` 构建后，无参数启动也会打开启动器。
 
-- P1 键盘方向键、Z/X/C/V/B/N、1 开始、5 投币。P2 用 W/S/A/D、F/G/H/R/T/Y、2 开始、6 投币。Esc 关闭窗口。
+- P1 键盘方向键、Z/X/C/V/B/N、1 开始、5 投币。P2 用 W/S/A/D、F/G/H/R/T/Y、2 开始、6 投币。本地游戏按 Enter 或小键盘 Enter 暂停和恢复，Esc 关闭窗口。局域网对战持续同步帧。
 - 摇杆按连接顺序分配 P1–P3，支持热插拔。默认方向为 X/Y 轴 0/1 和帽开关 0，动作键 0–5，开始 7，投币 6。设备的实际编号可用配置覆盖。`--mute` 关闭窗口音频。
-- `--game wofa` 可读取合并包 `wof.zip` 中的亚洲版 ROM。该版本对应现有 `wofa.ks0` 与 `wofa.ks1`。
+- 《三国志 II》的两款入口为 WOF WORLD（`wof`）和 WOF ASIA（`wofa`）。`--game wofa` 可读取合并包 `wof.zip` 中的亚洲版 ROM。该版本对应现有 `wofa.ks0` 与 `wofa.ks1`。
 
 输入配置可以只覆盖需要调整的条目。用 `none` 禁用按键、轴、帽开关；键盘名称使用 SDL 扫描码名称。
 

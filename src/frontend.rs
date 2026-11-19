@@ -207,12 +207,10 @@ pub fn run(
     let video = sdl.video().map_err(sdl_error)?;
     let joystick = sdl.joystick().map_err(sdl_error)?;
     let mut events = sdl.event_pump().map_err(sdl_error)?;
+    let title = format!("Kawaks Rust · {game}");
+    let paused_title = format!("{title} · Paused (Enter to resume)");
     let window = video
-        .window(
-            &format!("Kawaks Rust · {game}"),
-            FRAME_WIDTH as u32 * 2,
-            FRAME_HEIGHT as u32 * 2,
-        )
+        .window(&title, FRAME_WIDTH as u32 * 2, FRAME_HEIGHT as u32 * 2)
         .position_centered()
         .resizable()
         .build()
@@ -259,6 +257,8 @@ pub fn run(
     let mut next = Instant::now();
     let mut report = machine.report();
     let mut focused = true;
+    let mut paused = false;
+    let mut rendered = false;
     let mut pcm = Vec::with_capacity(AUDIO_SAMPLES_PER_FRAME * 2);
     'window: loop {
         for event in events.poll_iter() {
@@ -268,6 +268,28 @@ pub fn run(
                     scancode: Some(Scancode::Escape),
                     ..
                 } => break 'window,
+                Event::KeyDown {
+                    scancode: Some(Scancode::Return | Scancode::KpEnter),
+                    repeat: false,
+                    ..
+                } if peer.is_none() => {
+                    paused = !paused;
+                    canvas
+                        .window_mut()
+                        .set_title(if paused { &paused_title } else { &title })
+                        .map_err(sdl_error)?;
+                    if let Some(device) = &audio {
+                        if paused {
+                            device.pause();
+                            device.clear();
+                        } else {
+                            device.resume();
+                        }
+                    }
+                    if !paused {
+                        next = Instant::now();
+                    }
+                }
                 Event::JoyDeviceAdded { which, .. } => add_pad(&joystick, &mut pads, which),
                 Event::JoyDeviceRemoved { which, .. } => {
                     for pad in &mut pads {
@@ -288,7 +310,7 @@ pub fn run(
             }
         }
 
-        let advance = frames.is_none_or(|limit| report.frame < limit);
+        let advance = !paused && frames.is_none_or(|limit| report.frame < limit);
         if advance {
             let keys = events.keyboard_state();
             let mut input = FrameInput::default();
@@ -310,9 +332,12 @@ pub fn run(
             }
         }
 
-        texture
-            .update(None, &machine.render_rgb(), FRAME_WIDTH * 3)
-            .map_err(sdl_error)?;
+        if advance || !rendered {
+            texture
+                .update(None, &machine.render_rgb(), FRAME_WIDTH * 3)
+                .map_err(sdl_error)?;
+            rendered = true;
+        }
         canvas.clear();
         canvas.copy(&texture, None, None).map_err(sdl_error)?;
         canvas.present();

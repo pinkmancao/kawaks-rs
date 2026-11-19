@@ -1,3 +1,5 @@
+mod catalog;
+
 use std::{
     io,
     net::SocketAddr,
@@ -24,26 +26,22 @@ use sdl2::{
 use crate::{frontend, load_machine, netplay::Peer};
 
 const WIDTH: u32 = 820;
-const HEIGHT: u32 = 508;
+const HEIGHT: u32 = 562;
 const INK: Color = Color::RGB(236, 244, 250);
 const MUTED: Color = Color::RGB(167, 184, 202);
 const ACCENT: Color = Color::RGB(146, 225, 240);
 const PANEL: Color = Color::RGB(31, 44, 59);
-const GAMES: [(&str, &str, &str); 6] = [
-    ("dino", "CPS1", "dino"),
-    ("wof", "CPS1", "wof"),
-    ("wofa", "CPS1", "wof"),
-    ("punisher", "CPS1", "punisher"),
-    ("ssf2", "CPS2", "ssf2"),
-    ("kof97", "NEO GEO", "kof97"),
-];
-const ROM: [i32; 4] = [32, 162, 756, 41];
-const SAVE: [i32; 4] = [32, 210, 756, 41];
-const BIOS: [i32; 4] = [32, 258, 756, 41];
-const INPUT: [i32; 4] = [32, 306, 756, 41];
-const AUDIO: [i32; 4] = [647, 366, 141, 32];
-const ADDRESS: [i32; 4] = [300, 366, 333, 32];
-const START: [i32; 4] = [606, 432, 182, 44];
+const PAGE_SIZE: usize = 12;
+const SEARCH: [i32; 4] = [226, 60, 319, 25];
+const PREVIOUS: [i32; 4] = [696, 60, 42, 25];
+const NEXT: [i32; 4] = [746, 60, 42, 25];
+const ROM: [i32; 4] = [32, 216, 756, 41];
+const SAVE: [i32; 4] = [32, 264, 756, 41];
+const BIOS: [i32; 4] = [32, 312, 756, 41];
+const INPUT: [i32; 4] = [32, 360, 756, 41];
+const AUDIO: [i32; 4] = [647, 420, 141, 32];
+const ADDRESS: [i32; 4] = [300, 420, 333, 32];
+const START: [i32; 4] = [606, 486, 182, 44];
 const CLEAR_COLUMN: i32 = 742;
 const HOST_ADDRESS: &str = "0.0.0.0:22651";
 const JOIN_ADDRESS: &str = "127.0.0.1:22651";
@@ -68,11 +66,22 @@ impl Mode {
     ];
 
     fn rect(index: usize) -> Rect {
-        Rect::new(32 + index as i32 * 88, 366, 82, 32)
+        Rect::new(32 + index as i32 * 88, 420, 82, 32)
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Edit {
+    #[default]
+    None,
+    Search,
+    Address,
+}
+
 struct Settings {
+    catalog: Vec<catalog::Entry>,
+    search: String,
+    page: usize,
     game: usize,
     rom: PathBuf,
     save: Option<PathBuf>,
@@ -86,6 +95,9 @@ struct Settings {
 impl Settings {
     fn new() -> Self {
         let mut settings = Self {
+            catalog: catalog::discover(),
+            search: String::new(),
+            page: 0,
             game: 0,
             rom: PathBuf::new(),
             save: None,
@@ -99,21 +111,49 @@ impl Settings {
         settings
     }
 
+    fn entry(&self) -> &catalog::Entry {
+        &self.catalog[self.game]
+    }
+
+    fn filtered(&self) -> Vec<usize> {
+        let query = self.search.trim().to_ascii_lowercase();
+        self.catalog
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.matches(&query).then_some(index))
+            .collect()
+    }
+
+    fn change_page(&mut self, forward: bool) {
+        let last = self.filtered().len().div_ceil(PAGE_SIZE).saturating_sub(1);
+        self.page = if forward {
+            (self.page + 1).min(last)
+        } else {
+            self.page.saturating_sub(1)
+        };
+    }
+
     fn select_game(&mut self, index: usize) {
-        let (game, platform, archive) = GAMES[index];
-        let relative = PathBuf::from("roms")
-            .join(platform.to_ascii_lowercase().replace(' ', ""))
-            .join(format!("{archive}.zip"));
-        self.rom = default_rom(&relative);
+        if index == self.game && !self.rom.as_os_str().is_empty() {
+            return;
+        }
         self.game = index;
+        self.rom = self.entry().rom.clone();
         self.save = None;
-        if game != "kof97" {
+        if self.entry().driver != Some("kof97") {
             self.bios = None;
         }
     }
 
+    fn add_search_text(&mut self, value: &str) {
+        let room = 40usize.saturating_sub(self.search.chars().count());
+        self.search
+            .extend(value.chars().filter(|c| !c.is_control()).take(room));
+        self.page = 0;
+    }
+
     fn default_save(&self) -> PathBuf {
-        let name = format!("{}.ks0", GAMES[self.game].0);
+        let name = format!("{}.ks0", self.entry().id);
         self.rom
             .ancestors()
             .nth(3)
@@ -124,12 +164,21 @@ impl Settings {
     }
 
     fn load(&self) -> io::Result<(Launch, [u32; 4])> {
-        let game = GAMES[self.game].0;
+        let game = self.entry().driver.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "{} has a local ROM but this version has no compatible driver.",
+                    self.entry().label
+                ),
+            )
+        })?;
         let (machine, crc) =
             load_machine(game, self.rom.clone(), self.bios.clone(), self.save.clone())?;
         Ok((
             Launch {
                 machine,
+                game,
                 peer: None,
             },
             crc,
@@ -137,20 +186,9 @@ impl Settings {
     }
 }
 
-fn default_rom(relative: &Path) -> PathBuf {
-    let cwd = std::env::current_dir().ok();
-    let exe = std::env::current_exe().ok();
-    cwd.as_deref()
-        .into_iter()
-        .chain(exe.as_deref().and_then(Path::parent))
-        .flat_map(|base| base.ancestors().take(6))
-        .map(|base| base.join(relative))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| relative.to_owned())
-}
-
 struct Launch {
     machine: Box<dyn ArcadeMachine>,
+    game: &'static str,
     peer: Option<Peer>,
 }
 
@@ -176,7 +214,7 @@ pub fn run() -> io::Result<()> {
             settings.input.as_deref(),
             None,
             settings.mute,
-            GAMES[settings.game].0,
+            launch.game,
         ) {
             Ok(()) => String::new(),
             Err(error)
@@ -214,7 +252,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
         .set_logical_size(WIDTH, HEIGHT)
         .map_err(io::Error::other)?;
     let mut pending: Option<Pending> = None;
-    let mut editing = false;
+    let mut editing = Edit::None;
     let mut address_selected = false;
     let mut dirty = true;
 
@@ -254,12 +292,20 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                 } => {
                     if pending.take().is_some() {
                         status.clear();
-                    } else if editing {
-                        editing = false;
+                    } else if editing != Edit::None {
+                        editing = Edit::None;
                         video.text_input().stop();
                     } else {
                         return Ok(None);
                     }
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Return | Keycode::KpEnter),
+                    repeat: false,
+                    ..
+                } if editing == Edit::Search => {
+                    editing = Edit::None;
+                    video.text_input().stop();
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Return | Keycode::KpEnter),
@@ -270,7 +316,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                     keycode: Some(Keycode::A),
                     keymod,
                     ..
-                } if editing
+                } if editing == Edit::Address
                     && keymod.intersects(
                         Mod::LCTRLMOD | Mod::RCTRLMOD | Mod::LGUIMOD | Mod::RGUIMOD,
                     ) =>
@@ -281,7 +327,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                     keycode: Some(Keycode::V),
                     keymod,
                     ..
-                } if editing
+                } if editing == Edit::Address
                     && keymod.intersects(
                         Mod::LCTRLMOD | Mod::RCTRLMOD | Mod::LGUIMOD | Mod::RGUIMOD,
                     ) =>
@@ -293,14 +339,37 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                 Event::KeyDown {
                     keycode: Some(Keycode::Backspace | Keycode::Delete),
                     ..
-                } if editing => {
+                } if editing == Edit::Address => {
                     if std::mem::take(&mut address_selected) {
                         settings.address.clear();
                     } else {
                         settings.address.pop();
                     }
                 }
-                Event::TextInput { text, .. } if editing => {
+                Event::KeyDown {
+                    keycode: Some(Keycode::V),
+                    keymod,
+                    ..
+                } if editing == Edit::Search
+                    && keymod.intersects(
+                        Mod::LCTRLMOD | Mod::RCTRLMOD | Mod::LGUIMOD | Mod::RGUIMOD,
+                    ) =>
+                {
+                    if let Ok(text) = video.clipboard().clipboard_text() {
+                        settings.add_search_text(text.trim());
+                    }
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Backspace | Keycode::Delete),
+                    ..
+                } if editing == Edit::Search => {
+                    settings.search.pop();
+                    settings.page = 0;
+                }
+                Event::TextInput { text, .. } if editing == Edit::Search => {
+                    settings.add_search_text(&text)
+                }
+                Event::TextInput { text, .. } if editing == Edit::Address => {
                     edit_address(&mut settings.address, &mut address_selected, &text);
                 }
                 Event::DropFile { filename, .. } if pending.is_none() => {
@@ -309,18 +378,23 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                         .extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
                     {
-                        if let Some(game) = GAMES.iter().position(|item| {
-                            path.file_stem()
-                                .is_some_and(|s| s.eq_ignore_ascii_case(item.0))
+                        if let Some(game) = settings.catalog.iter().position(|entry| {
+                            entry.rom == path
+                                || path
+                                    .file_stem()
+                                    .is_some_and(|stem| stem.eq_ignore_ascii_case(&entry.id))
                         }) {
-                            if settings.game != game {
-                                settings.select_game(game);
-                            }
+                            settings.select_game(game);
+                            settings.search.clear();
+                            settings.page = game / PAGE_SIZE;
                         }
                         settings.rom = path;
                     } else {
                         settings.save = Some(path);
                     }
+                }
+                Event::MouseWheel { y, .. } if y != 0 && pending.is_none() => {
+                    settings.change_page(y < 0)
                 }
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,
@@ -332,16 +406,32 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                     if bounds(START).contains_point(point) {
                         start = true;
                     } else if pending.is_none() {
-                        editing =
-                            settings.mode != Mode::Local && bounds(ADDRESS).contains_point(point);
-                        address_selected = editing;
-                        if editing {
+                        editing = if bounds(SEARCH).contains_point(point) {
+                            Edit::Search
+                        } else if settings.mode != Mode::Local
+                            && bounds(ADDRESS).contains_point(point)
+                        {
+                            Edit::Address
+                        } else {
+                            Edit::None
+                        };
+                        address_selected = editing == Edit::Address;
+                        if editing != Edit::None {
                             video.text_input().start();
                         } else {
                             video.text_input().stop();
                         }
-                        if let Some(index) =
-                            (0..GAMES.len()).find(|&i| game_rect(i).contains_point(point))
+                        if bounds(PREVIOUS).contains_point(point) {
+                            settings.change_page(false);
+                        } else if bounds(NEXT).contains_point(point) {
+                            settings.change_page(true);
+                        } else if let Some((_, &index)) = settings
+                            .filtered()
+                            .iter()
+                            .skip(settings.page * PAGE_SIZE)
+                            .take(PAGE_SIZE)
+                            .enumerate()
+                            .find(|(row, _)| game_rect(*row).contains_point(point))
                         {
                             settings.select_game(index);
                             status.clear();
@@ -362,7 +452,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                                 &default,
                                 Some((&["*.ks?", "*.kwk", "*.kwk4"], "KWK4 save")),
                             );
-                        } else if GAMES[settings.game].0 == "kof97"
+                        } else if settings.entry().driver == Some("kof97")
                             && bounds(BIOS).contains_point(point)
                         {
                             choose_optional(
@@ -405,7 +495,7 @@ fn choose(settings: &mut Settings, status: &mut String) -> io::Result<Option<Lau
                     status.clear();
                     continue;
                 }
-                editing = false;
+                editing = Edit::None;
                 video.text_input().stop();
                 match settings.load() {
                     Ok((launch, _)) if settings.mode == Mode::Local => return Ok(Some(launch)),
@@ -488,7 +578,12 @@ fn edit_address(address: &mut String, selected: &mut bool, text: &str) {
 }
 
 fn game_rect(index: usize) -> Rect {
-    Rect::new(32 + index as i32 * 127, 94, 121, 49)
+    Rect::new(
+        32 + (index % 6) as i32 * 127,
+        94 + (index / 6) as i32 * 54,
+        121,
+        49,
+    )
 }
 
 fn draw(
@@ -496,14 +591,65 @@ fn draw(
     settings: &Settings,
     status: &str,
     pending: bool,
-    editing: bool,
+    editing: Edit,
 ) -> Result<(), String> {
     canvas.set_draw_color(Color::RGB(14, 23, 34));
     canvas.clear();
     text(canvas, 32, 26, "KAWAKS RUST", 3, INK, 32)?;
-    text(canvas, 32, 66, "SELECT GAME", 1, ACCENT, 20)?;
-    for (index, (name, platform, _)) in GAMES.iter().enumerate() {
-        let rect = game_rect(index);
+    text(canvas, 32, 68, "ROM LIBRARY", 1, ACCENT, 16)?;
+    box_color(
+        canvas,
+        bounds(SEARCH),
+        if editing == Edit::Search {
+            Color::RGB(46, 83, 105)
+        } else {
+            PANEL
+        },
+    )?;
+    text(
+        canvas,
+        236,
+        68,
+        if settings.search.is_empty() {
+            "Search name or system"
+        } else {
+            &settings.search
+        },
+        1,
+        if settings.search.is_empty() {
+            MUTED
+        } else {
+            INK
+        },
+        37,
+    )?;
+    let filtered = settings.filtered();
+    let pages = filtered.len().div_ceil(PAGE_SIZE).max(1);
+    text(
+        canvas,
+        558,
+        68,
+        &format!("{}/{}  [{}]", settings.page + 1, pages, filtered.len()),
+        1,
+        MUTED,
+        16,
+    )?;
+    for (button, label) in [(PREVIOUS, "<"), (NEXT, ">")] {
+        let rect = bounds(button);
+        box_color(canvas, rect, PANEL)?;
+        text(canvas, rect.x() + 16, 68, label, 1, ACCENT, 1)?;
+    }
+    if filtered.is_empty() {
+        text(canvas, 32, 112, "No matching ROMs", 1, MUTED, 24)?;
+    }
+    for (row, &index) in filtered
+        .iter()
+        .skip(settings.page * PAGE_SIZE)
+        .take(PAGE_SIZE)
+        .enumerate()
+    {
+        let entry = &settings.catalog[index];
+        let rect = game_rect(row);
         box_color(
             canvas,
             rect,
@@ -517,14 +663,21 @@ fn draw(
             canvas,
             rect.x() + 9,
             rect.y() + 9,
-            &name.to_ascii_uppercase(),
+            &entry.label,
             1,
-            INK,
+            if entry.driver.is_some() { INK } else { MUTED },
             13,
         )?;
-        text(canvas, rect.x() + 9, rect.y() + 29, platform, 1, MUTED, 13)?;
+        let detail = if entry.driver.is_none() {
+            format!("{} / N/A", entry.platform)
+        } else if entry.present {
+            entry.platform.to_owned()
+        } else {
+            "ROM MISSING".to_owned()
+        };
+        text(canvas, rect.x() + 9, rect.y() + 29, &detail, 1, MUTED, 13)?;
     }
-    let bios_enabled = GAMES[settings.game].0 == "kof97";
+    let bios_enabled = settings.entry().driver == Some("kof97");
     let rows = [
         (ROM, "ROM", Some(settings.rom.as_path()), "Choose ZIP", true),
         (
@@ -607,19 +760,19 @@ fn draw(
         box_color(
             canvas,
             bounds(ADDRESS),
-            if editing {
+            if editing == Edit::Address {
                 Color::RGB(46, 83, 105)
             } else {
                 PANEL
             },
         )?;
-        text(canvas, 311, 378, &settings.address, 1, INK, 39)?;
+        text(canvas, 311, 432, &settings.address, 1, INK, 39)?;
     }
     box_color(canvas, bounds(AUDIO), PANEL)?;
     text(
         canvas,
         658,
-        378,
+        432,
         if settings.mute {
             "AUDIO OFF"
         } else {
@@ -629,18 +782,32 @@ fn draw(
         INK,
         14,
     )?;
-    box_color(canvas, bounds(START), ACCENT)?;
+    box_color(
+        canvas,
+        bounds(START),
+        if pending || settings.entry().driver.is_some() {
+            ACCENT
+        } else {
+            MUTED
+        },
+    )?;
     text(
         canvas,
         621,
-        447,
-        if pending { "CANCEL" } else { "PLAY" },
+        501,
+        if pending {
+            "CANCEL"
+        } else if settings.entry().driver.is_some() {
+            "PLAY"
+        } else {
+            "N/A"
+        },
         2,
         Color::RGB(14, 23, 34),
         10,
     )?;
     for (index, line) in wrap(status, 67).iter().take(3).enumerate() {
-        text(canvas, 32, 435 + index as i32 * 17, line, 1, MUTED, 67)?;
+        text(canvas, 32, 489 + index as i32 * 17, line, 1, MUTED, 67)?;
     }
     canvas.present();
     Ok(())
@@ -742,7 +909,7 @@ mod tests {
             .software()
             .build()
             .unwrap();
-        draw(&mut canvas, &settings, "", false, false).unwrap();
+        draw(&mut canvas, &settings, "", false, Edit::None).unwrap();
         let rgb = canvas
             .read_pixels(None, sdl2::pixels::PixelFormatEnum::RGB24)
             .unwrap();
@@ -751,6 +918,6 @@ mod tests {
             &rgb[offset..offset + 3]
         };
         assert_eq!(pixel(32 + 127 * 5 + 3, 98), &[46, 83, 105]);
-        assert_eq!(pixel(610, 435), &[146, 225, 240]);
+        assert_eq!(pixel(610, 489), &[146, 225, 240]);
     }
 }
